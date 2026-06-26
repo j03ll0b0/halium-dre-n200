@@ -26,35 +26,68 @@ jobs:
             bc bison build-essential clang cpio flex \
             gcc-aarch64-linux-gnu git kmod libelf-dev \
             libssl-dev lz4 make python3 rsync
-          aarch64-linux-gnu-gcc --version
-          clang --version
+          echo "Toolchains:"
+          aarch64-linux-gnu-gcc --version | head -1
+          clang --version | head -1
 
       - name: Clone kernel source
         run: |
           git clone --depth 1 --branch $KERNEL_BRANCH \
             https://github.com/$KERNEL_REPO.git kernel
           cd kernel
+          echo "Kernel source cloned."
           git log --oneline -1
-          echo "=== Available defconfigs ==="
-          ls arch/arm64/configs/
-          echo "=== Vendor configs ==="
-          ls arch/arm64/configs/vendor/
+          echo "=== techpack/oneplus/ contents ==="
+          ls -1 techpack/oneplus/
           cd ..
 
-      - name: Build kernel config (defconfig + holi_QGKI fragment + Halium fragment)
+      - name: Patch kernel tree for missing OnePlus techpack directories
         run: |
           cd kernel
 
-          # Step 1: Start from base defconfig
+          # The public OnePlus kernel source tree is incomplete -- several
+          # directories referenced in techpack/oneplus/Makefile are missing.
+          # Create stub directories and empty Makefiles to allow the build
+          # to proceed. The conditionals in the Makefile should exclude
+          # most of these for holi platforms, but _modbuiltin traversal
+          # doesn't respect those conditionals.
+
+          echo "Creating stub directories for missing techpack components..."
+
+          # Create a helper script to stub missing dirs
+          for dir in techpack/oneplus/power \
+                     techpack/oneplus/tri_state_key \
+                     techpack/oneplus/slabtrace; do
+            if [ ! -d "$dir" ]; then
+              mkdir -p "$dir"
+              # Empty Makefile that does nothing
+              echo "# Stub Makefile - directory not present in public source" > "$dir/Makefile"
+              echo "obj-y :=" >> "$dir/Makefile"
+              echo "  Created: $dir/Makefile"
+            fi
+          done
+
+          # Verify techpack/oneplus/ Makefile
+          echo ""
+          echo "=== techpack/oneplus/Makefile key lines ==="
+          grep -E "obj-|ifeq|ifndef|ifneq" techpack/oneplus/Makefile | head -20
+
+          cd ..
+          echo "Done."
+
+      - name: Build kernel config
+        run: |
+          cd kernel
+
+          # Step 1: Base defconfig
           make ARCH=arm64 defconfig
 
-          # Step 2: Apply holi QGKI config fragment
+          # Step 2: Apply the holi QGKI fragment (device-specific)
           scripts/kconfig/merge_config.sh -m .config \
             arch/arm64/configs/vendor/holi_QGKI.config
 
-          # Step 3: Create and apply our Halium config fragment
+          # Step 3: Apply our Halium config fragment
           mkdir -p ../patches
-          echo "Creating Halium config fragment..."
           cat > ../patches/halium.config << 'ENDOFHALIUM'
 CONFIG_NAMESPACES=y
 CONFIG_NET_NS=y
@@ -70,13 +103,10 @@ CONFIG_RT_GROUP_SCHED=y
 CONFIG_SECCOMP=y
 CONFIG_SECCOMP_FILTER=y
 CONFIG_KEYS=y
-CONFIG_KEY_DH_OPERATION=y
 CONFIG_SECURITY=y
 CONFIG_SECURITY_SELINUX=y
 CONFIG_SECURITY_SELINUX_BOOTPARAM=y
 CONFIG_SECURITY_SELINUX_DEVELOP=y
-CONFIG_AUDIT=y
-CONFIG_AUDITSYSCALL=y
 CONFIG_DEVTMPFS=y
 CONFIG_DEVTMPFS_MOUNT=y
 CONFIG_TMPFS=y
@@ -134,26 +164,47 @@ ENDOFHALIUM
 
           scripts/kconfig/merge_config.sh -m .config ../patches/halium.config
 
-          # Make olddefconfig to resolve any conflicts
+          # Finalize config
           make ARCH=arm64 olddefconfig
 
-          # Save final config
+          # Save and inspect
           cp .config ../final-halium.config
-          echo "Config saved. Key configs:"
-          grep -E "^CONFIG_ANDROID|^CONFIG_NAMESPACES|^CONFIG_SECCOMP|^CONFIG_USER_NS|^CONFIG_CGROUP_|^CONFIG_BRIDGE|^CONFIG_VETH|^CONFIG_TUN" .config
+          echo "=== Key HALIUM configs in final .config ==="
+          grep -E "^CONFIG_ANDROID=|^CONFIG_ARCH_HOLI=|^CONFIG_NAMESPACES=|^CONFIG_SECCOMP=|^CONFIG_USER_NS=|^CONFIG_CGROUPS=|^CONFIG_BRIDGE=|^CONFIG_VETH=|^CONFIG_TUN=|^CONFIG_QGKI=" .config || echo "(some might not show if default)"
 
       - name: Build kernel
         run: |
           cd kernel
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-            CC=clang -j$(nproc) 2>&1 | tee ../build.log
 
-          if [ -f arch/arm64/boot/$KERNEL_IMAGE_NAME ]; then
-            echo "Kernel build SUCCESS"
-            ls -lh arch/arm64/boot/$KERNEL_IMAGE_NAME
+          # Use aarch64 GCC cross-compiler for reliability
+          # (clang cross-compile requires matching target triple)
+          echo "Building kernel with GCC cross-compile (aarch64-linux-gnu-)..."
+          make ARCH=arm64 \
+               CROSS_COMPILE=aarch64-linux-gnu- \
+               CC=aarch64-linux-gnu- \
+               LD=aarch64-linux-gnu-ld \
+               AR=aarch64-linux-gnu-ar \
+               -j$(nproc) 2>&1 | tee ../build.log
+
+          if [ -f arch/arm64/boot/Image ]; then
+            echo ""
+            echo "============================================"
+            echo "  KERNEL BUILD SUCCESS"
+            echo "============================================"
+            ls -lh arch/arm64/boot/Image
+          elif [ -f arch/arm64/boot/Image.gz ]; then
+            echo ""
+            echo "============================================"
+            echo "  KERNEL BUILD SUCCESS (gzip compressed)"
+            echo "============================================"
+            ls -lh arch/arm64/boot/Image.gz
           else
-            echo "Kernel build FAILED - checking for errors"
-            tail -50 ../build.log
+            echo ""
+            echo "============================================"
+            echo "  KERNEL BUILD FAILED"
+            echo "============================================"
+            echo "--- Last 100 lines of build log ---"
+            tail -100 ../build.log
             exit 1
           fi
 
@@ -162,14 +213,14 @@ ENDOFHALIUM
           cd kernel
           mkdir -p ../built-modules
           find . -name "*.ko" -exec cp {} ../built-modules/ \; 2>/dev/null || true
-          echo "Total modules built: $(find ../built-modules -name '*.ko' 2>/dev/null | wc -l)"
-          ls ../built-modules/ | head -20
+          echo "Modules found: $(find ../built-modules -name '*.ko' 2>/dev/null | wc -l)"
+          ls ../built-modules/ 2>/dev/null | head -20
 
-      - name: Upload boot image artifact
+      - name: Upload kernel image
         uses: actions/upload-artifact@v4
         with:
-          name: halium-boot-${{ env.DEVICE_CODENAME }}
-          path: kernel/arch/arm64/boot/${{ env.KERNEL_IMAGE_NAME }}
+          name: kernel-image-${{ env.DEVICE_CODENAME }}
+          path: kernel/arch/arm64/boot/Image
           retention-days: 30
 
       - name: Upload modules
@@ -180,11 +231,11 @@ ENDOFHALIUM
           path: built-modules/
           retention-days: 30
 
-      - name: Upload logs and config
+      - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-logs
+          name: build-logs-config
           path: |
             build.log
             final-halium.config
