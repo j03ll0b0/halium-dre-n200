@@ -150,7 +150,7 @@ jobs:
           CONFIG_ANDROID_BINDER_IPC=y
           CONFIG_ANDROID_BINDERFS=y
           CONFIG_ANDROID_BINDER_DEVICES="binder,hwbinder,vndbinder"
-          HALIUME OF
+EOF
 
           scripts/kconfig/merge_config.sh -m .config ../patches/halium.config
 
