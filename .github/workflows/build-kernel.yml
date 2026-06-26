@@ -66,9 +66,9 @@ jobs:
       - name: Apply Halium config patches
         run: |
           cd kernel
-          
+        
           # Create halium defconfig based on vendor defconfig
-          cp arch/arm64/configs/$KERNEL_DEFCONFIG \
+          cp arch/arm64/configs/vendor/holi-qgki_defconfig \
              arch/arm64/configs/halium_defconfig
           
           # Append Halium-required kernel configs
