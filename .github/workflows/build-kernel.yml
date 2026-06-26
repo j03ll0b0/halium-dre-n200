@@ -101,14 +101,12 @@ jobs:
         run: |
           cd kernel
 
-          # Use aarch64 GCC cross-compiler for reliability
-          # (clang cross-compile requires matching target triple)
-          echo "Building kernel with GCC cross-compile (aarch64-linux-gnu-)..."
+          # Use aarch64 GCC cross-compiler
+          # CROSS_COMPILE provides the prefix; kernel appends gcc/ld/ar etc.
+          echo "Building kernel with GCC cross-compile..."
           make ARCH=arm64 \
                CROSS_COMPILE=aarch64-linux-gnu- \
-               CC=aarch64-linux-gnu- \
-               LD=aarch64-linux-gnu-ld \
-               AR=aarch64-linux-gnu-ar \
+               HOSTCC=gcc \
                -j$(nproc) 2>&1 | tee ../build.log
 
           if [ -f arch/arm64/boot/Image ]; then
