@@ -26,9 +26,14 @@ jobs:
             bc bison build-essential clang cpio flex \
             gcc-aarch64-linux-gnu git kmod libelf-dev \
             libssl-dev lz4 make python3 rsync
+          # The 5.4 OnePlus kernel scripts use #!/usr/bin/env python2
+          # Create a python2 -> python3 symlink (works for our kernel scripts)
+          sudo ln -sf /usr/bin/python3 /usr/local/bin/python2
           echo "Toolchains:"
+          which aarch64-linux-gnu-gcc
           aarch64-linux-gnu-gcc --version | head -1
-          clang --version | head -1
+          which python2
+          python2 --version
 
       - name: Clone kernel source
         run: |
